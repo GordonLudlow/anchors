@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="anchors.css" rel="stylesheet">
+</head>
+<body>
+
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/1.12.4/jquery.min.js"></script>
+
+<!-- Google maps API -->
+<script type="text/javascript" src="http://maps.googleapis.com/maps/api/js?key=AIzaSyCyM0mrFrvnIbYkve4hWKY30cjVqY8VnMU&callback=initializeMap" async defer></script>
+<div id="results">
+</div>
+<div id="mapCanvas"> 
+</div>
+
+<script>
+    var map;
+    var mapInitialized=false;
+    var portals = [];
+    var bestSize = 0;
+    var bestLines = [];
+    var bestAnchorPortals;
+    var bestAnchors = {};    
+    var bestSpine = [];
+    var markers = [];
+    function makeMarker(lat, lng, iconUrl, name) {
+        if (name == "") {
+            var marker = new google.maps.Marker({
+              position: new google.maps.LatLng(lat, lng),
+              map: map,
+              clickable: false,
+              icon: {url: iconUrl, scaledSize: new google.maps.Size(20, 20), anchor: new google.maps.Point(10,10)}
+            });
+        }
+        else {
+            var marker = new google.maps.Marker({
+              position: new google.maps.LatLng(lat, lng),
+              map: map,
+              icon: {url: iconUrl, scaledSize: new google.maps.Size(20, 20), anchor: new google.maps.Point(10,10)},
+              title: name
+            });
+            var infoWindow = new google.maps.InfoWindow({
+                content: name
+            });
+            google.maps.event.addListener(marker, 'click', function () {
+                infoWindow.open(map, marker);
+            });
+        }
+        return marker;
+    }
+    function initializeMap() 
+    {
+        if (!mapInitialized)
+        {
+            var mapOptions = { center: new google.maps.LatLng(47.588165, -122.139827),
+                                zoom: 16,
+                                mapTypeId: google.maps.MapTypeId.ROADMAP };
+            map = new google.maps.Map(document.getElementById("mapCanvas"), mapOptions);
+            mapInitialized=true;  
+
+            $.ajaxSetup({
+                cache:false
+            });
+            $.getJSON('portals.json', function (data) {
+                $.each(data, function( key, value ) {
+                    portals[parseInt(value.mapNum)] = {lat: value.lat, lng: value.lng, name: key};
+                });
+
+                for (var portal=0; portal < portals.length; portal++) {
+                    makeMarker(portals[portal].lat, portals[portal].lng, 'hum_reso_08.png', portals[portal].name);
+                }
+            
+                // Start the combinatorial search on a background thread
+                var webWorker = new Worker("search.js");
+                webWorker.postMessage(portals);
+                webWorker.onmessage = function(message) {
+                    //console.log(message);
+                    var event = message.data;
+                    if (event.type == 'best') {
+                        for (var line=0; line<bestLines.length; line++) {
+                            bestLines[line].line.setMap(null);
+                        }
+                        bestLines.length = 0;
+                        bestSpine = event.points.slice();
+                        for (i=0; i<event.points.length; i++) {
+                            var linePath = [portals[event.anchors[0]],portals[event.points[i]]];
+                            var line = new google.maps.Polyline({
+                                path: linePath,
+                                strokeColor: '#0000FF',
+                                map: map
+                            });
+                            bestLines.push({path: linePath, line: line});
+                            linePath = [portals[event.anchors[1]],portals[event.points[i]]];
+                            line = new google.maps.Polyline({
+                                path: linePath,
+                                strokeColor: '#0000FF',
+                                map: map
+                            }); 
+                            bestLines.push({path: linePath, line: line});
+                        }
+                        if (!('line' in bestAnchors) || bestAnchorPortals[0] != event.anchors[0] || bestAnchorPortals[1] != event.anchors[1]) 
+                        {        
+                            if ('line' in bestAnchors) {
+                                bestAnchors.line.setMap(null);
+                            }
+                            var linePath = [portals[event.anchors[0]], portals[event.anchors[1]]];
+                            var line = new google.maps.Polyline({
+                                path: linePath,
+                                map: map
+                            });        
+                            bestAnchors = {path:linePath, line:line};
+                        }                    
+                        bestAnchorPortals = event.anchors;    
+                    }
+                    else if (event.type == "anchor") {
+                        if (event.index in markers) {
+                            markers[event.index].setMap(null);
+                        }
+                        markers[event.index] = makeMarker(event.lat, event.lng, "circle.png", "");
+                    }
+                    else if (event.type == "done") {
+                        for (let marker of markers) {
+                            marker.setMap(null);
+                            $("#mapCanvas").height("90%");
+
+                            $("#results").height("10%");
+                            let results = "<p>Anchors: <ul><li>" 
+                                + portals[bestAnchorPortals[0]].name 
+                                + "</li><li>" 
+                                + portals[bestAnchorPortals[1]].name
+                                + "</ul><ol>";
+                            for (let spine of bestSpine) {
+                                results += "<li>" + portals[spine].name + "</li>";
+                            }
+                            results += "</ol>";
+                            $("#results").html(results);
+                        }
+                    }
+                };
+            });            
+        }
+    }
+</script>
+</body>
+</html>
