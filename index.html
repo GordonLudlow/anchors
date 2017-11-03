@@ -11,22 +11,42 @@
 <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.12.4/jquery.min.js"></script>
 
 <!-- Google maps API -->
-<script type="text/javascript" src="http://maps.googleapis.com/maps/api/js?key=AIzaSyCyM0mrFrvnIbYkve4hWKY30cjVqY8VnMU&callback=initializeMap" async defer></script>
+<script type="text/javascript" src="http://maps.googleapis.com/maps/api/js?key=AIzaSyCyM0mrFrvnIbYkve4hWKY30cjVqY8VnMU&callback=initializeMap" async defer></script> 
+
+
+<div id="menu">
+<select id="playbox">
+<option value="Select"><i>Select playbox...</i></option>
+<option value="New">&lt;New...&gt;</option>
+</select>
+</div>
 <div id="results">
 </div>
 <div id="mapCanvas"> 
+</div>
+<div id="debug">
+<input type="button" id="debugPrev" value="Previous" />
+<input type="button" id="debugNext" value="Next" />
+<input type="button" id="debugBest" value="Best" />
+<span id="debugCount" />
 </div>
 
 <script>
     var map;
     var mapInitialized=false;
     var portals = [];
-    var bestSize = 0;
-    var bestLines = [];
-    var bestAnchorPortals;
-    var bestAnchors = {};    
-    var bestSpine = [];
     var markers = [];
+    var solutions = [];
+    var displayedResult = 0;
+    var playBoxes;
+    var portalMarkers = [];
+    
+    var debugLines = [];
+    var debugMarkers = [];
+    var debugIndex = -1;
+    var debugEvents = [];
+    var debugBestShown = true;
+    
     function makeMarker(lat, lng, iconUrl, name) {
         if (name == "") {
             var marker = new google.maps.Marker({
@@ -52,96 +72,314 @@
         }
         return marker;
     }
+    function clearTies() {
+        if (!solutions.length) return;
+        // Get rid of lines for ties
+        for (tie of solutions) {
+            tie.anchors.line.setMap(null);
+            for (line of tie.lines) {
+                line.line.setMap(null);
+            }
+        }
+        // Clear out the list of ties
+        solutions.length = 0;        
+    };
+    function addSolution(event) {
+        console.log(event);
+        let tie = {lines: [], anchorPortals: [], anchors: {}, spine:event.points.slice()}
+
+        for (i=0; i<event.points.length; i++) {
+            var linePath = [portals[event.anchors[0]],portals[event.points[i]]];
+            console.log(linePath);
+            var line = new google.maps.Polyline({
+                path: linePath,
+                strokeColor: "#0000FF",
+                map: map
+            });
+            tie.lines.push({path: linePath, line: line});
+            linePath = [portals[event.anchors[1]],portals[event.points[i]]];
+            console.log(linePath);
+            line = new google.maps.Polyline({
+                path: linePath,
+                strokeColor: "#0000FF",
+                map: map
+            }); 
+            tie.lines.push({path: linePath, line: line});
+        }
+
+        var linePath = [portals[event.anchors[0]], portals[event.anchors[1]]];
+        var line = new google.maps.Polyline({
+            path: linePath,
+            map: map
+        });        
+        tie.anchors = {path:linePath, line:line};
+        tie.anchorPortals = event.anchors;    
+        
+        solutions.push(tie);
+    }
+
+    function showSolution(show, i) {    
+        let debugMap = show? map : null;
+        solutions[i].anchors.line.setMap(debugMap);
+        for (var line=0; line<solutions[i].lines.length; line++) {
+            solutions[i].lines[line].line.setMap(debugMap);
+        } 
+    }
+    function showSolutions(show) {
+        for (let i = 0; i<solutions.length; i++)
+        {
+            showSolution(show, i);
+        }
+    }
+    
+    function displayResults() {
+        for (let marker of markers) {
+            marker.setMap(null);
+        }
+        let results = "";
+        if (solutions.length > 1) {
+            results += "<input type='button' id='prevSolution' value='Previous'  onclick='previousResult();' />";
+            results += "<input type='button' id='nextSolution' value='Next'  onclick='nextResult();' />";
+            results += "<span id='solutionCount'>" + (displayedResult+1) + "/" + solutions.length + "</span>";
+            showSolutions(false);
+            showSolution(true, displayedResult);
+        }
+        results += "<p>Anchors: <ul><li>" 
+            + portals[solutions[displayedResult].anchorPortals[0]].name 
+            + "</li><li>" 
+            + portals[solutions[displayedResult].anchorPortals[1]].name
+            + "</ul><ol>";
+        for (let spine of solutions[displayedResult].spine) {
+            results += "<li>" + portals[spine].name + "</li>";
+        }
+        results += "</ol>";
+        results += "results.json:<br><blockquote><p>[";
+        for (let soln=0; soln<solutions.length; soln++) {
+            if (soln) results += ", ";
+            results += "[" + solutions[soln].anchorPortals[0];
+            results += ", ";
+            results += solutions[soln].anchorPortals[1];
+            results += ", [";
+            for (let spinePortal = 0; spinePortal<solutions[soln].spine.length; spinePortal++) {
+                if (spinePortal) {
+                    results += ", ";
+                }
+                results += solutions[soln].spine[spinePortal];
+            }
+            results += "]]";
+        }
+        results += "]]</p></blockquote>";
+        $("#results").html(results);
+    }
+    
+    function previousResult() {
+        if (displayedResult) {
+            displayedResult--;
+            displayResults();
+        }
+    }
+    
+    function nextResult() {
+        if (displayedResult<solutions.length-1) {
+            displayedResult++;
+            displayResults();
+        }
+    }
+    
+    function drawDebug() {
+        $("#debugCount").html((debugIndex+1) + " / " + (debugEvents.length==1? "?" : debugEvents.length));
+        let event = debugEvents[debugIndex];
+        for (let line of debugLines) {
+            line.setMap(null);
+        }
+        debugLines.length = 0;
+        let linePath = [portals[event.i], portals[event.k]];
+        debugLines.push(new google.maps.Polyline({
+                            path: linePath,
+                            strokeColor: "#FF00FF",
+                            map: map
+                        }));
+        linePath = [portals[event.j], portals[event.k]];
+        debugLines.push(new google.maps.Polyline({
+                            path: linePath,
+                            strokeColor: "#FF00FF",
+                            map: map
+                        }));
+        linePath = [portals[event.i], portals[event.j]];
+        debugLines.push(new google.maps.Polyline({
+                            path: linePath,
+                            strokeColor: "#FF00FF",
+                            map: map
+                        }));                                        
+        for (let marker of debugMarkers) {
+            marker.setMap(null);
+        }
+        debugMarkers.push(new google.maps.Marker({
+          position: portals[event.i],
+          label: "I",
+          map: map
+        }));
+        debugMarkers.push(new google.maps.Marker({
+          position: portals[event.j],
+          label: "J",
+          map: map
+        }));
+        debugMarkers.push(new google.maps.Marker({
+          position: portals[event.k],
+          label: "K",
+          map: map
+        }));
+        for (let inside of event.in) {
+            debugMarkers.push(makeMarker(portals[inside].lat, portals[inside].lng, "blackcircle.png", ""));
+        }
+        for (let outside of event.out) {
+            debugMarkers.push(makeMarker(portals[outside].lat, portals[outside].lng, "redcircle.png", ""));
+        }  
+    }
+    function addPortalMarkers(data) {
+        portals.length = 0;
+        for (let marker of portalMarkers) {
+            marker.setMap(null);
+        }
+        portalMarkers.length = 0;
+        $.each(data, function( key, value ) {
+            portals[parseInt(value.mapNum)] = {lat: value.lat, lng: value.lng, name: key};
+        });
+
+        for (var portal=0; portal < portals.length; portal++) {
+            console.log(portals[portal]);
+            portalMarkers.push(makeMarker(portals[portal].lat, portals[portal].lng, 'hum_reso_08.png', portals[portal].name));
+        }
+    }
+    
+    function newSearch(data) {
+        addPortalMarkers(data);
+
+        // Start the combinatorial search on a background thread
+        var webWorker = new Worker("search.js");
+        webWorker.postMessage(portals);
+        webWorker.onmessage = function(message) {
+            //console.log(message);
+            var event = message.data;
+            if (event.type == 'best') {
+                clearTies();
+                addSolution(event);
+            }
+            else if (event.type == 'tie') {
+                addSolution(event);
+            }
+            else if (event.type == "anchor") {
+                if (event.index in markers) {
+                    markers[event.index].setMap(null);
+                }
+                markers[event.index] = makeMarker(event.lat, event.lng, "circle.png", "");
+            }
+            else if (event.type == "done") {
+                displayResults();
+            }
+            else if (event.type == "debug") {
+                let message = "debug event " + (debugEvents.length + 1) + ": (i,j,k)=(" + event.i + "," + event.j + "," + event.k +") ";
+                message += "in=[";
+                for (let inside of event.in) {
+                    message += " " + inside;
+                }
+                message += " ] out=[";
+                for (let outside of event.out) {
+                    message += " " + outside;
+                }
+                message += " ]";                        
+                console.log(message);
+
+                debugEvents.push(event);
+                if (debugIndex == -1) {
+                    debugIndex = 0;
+                    drawDebug();
+                }
+            }
+        };
+    }
+    
+    function userDataEntered() {
+        newSearch(JSON.parse($('#portals_json').val()));    
+    }
+
     function initializeMap() 
     {
         if (!mapInitialized)
         {
-            var mapOptions = { center: new google.maps.LatLng(47.588165, -122.139827),
-                                zoom: 16,
-                                mapTypeId: google.maps.MapTypeId.ROADMAP };
+            let mapOptions = { center: new google.maps.LatLng(47.606353, -122.170870),
+                               zoom: 10,
+                               mapTypeId: google.maps.MapTypeId.ROADMAP };            
             map = new google.maps.Map(document.getElementById("mapCanvas"), mapOptions);
             mapInitialized=true;  
 
             $.ajaxSetup({
                 cache:false
             });
-            $.getJSON('portals.json', function (data) {
-                $.each(data, function( key, value ) {
-                    portals[parseInt(value.mapNum)] = {lat: value.lat, lng: value.lng, name: key};
-                });
-
-                for (var portal=0; portal < portals.length; portal++) {
-                    makeMarker(portals[portal].lat, portals[portal].lng, 'hum_reso_08.png', portals[portal].name);
+            $.getJSON('results.json', function (data) {
+                playBoxes = data;
+                console.log(data);
+                $.each(data, function (index,value) {
+                    $('#playbox').append($('<option>', { 
+                        value: value.name,
+                        text : value.name 
+                    }));
+                });                
+            });
+            $('#playbox').change(function () {
+                clearTies();
+                displayedResult = 0;
+                var optionSelected = $(this).find("option:selected");
+                var valueSelected  = optionSelected.val();
+                if (valueSelected=="New") {
+                    let inputForm = "<textarea id='portals_json' rows='8' cols='80'>portals.json</textarea>";
+                    inputForm += "<button onclick='userDataEntered();'>Find fields</button>";
+                    $("#results").html(inputForm);
                 }
-            
-                // Start the combinatorial search on a background thread
-                var webWorker = new Worker("search.js");
-                webWorker.postMessage(portals);
-                webWorker.onmessage = function(message) {
-                    //console.log(message);
-                    var event = message.data;
-                    if (event.type == 'best') {
-                        for (var line=0; line<bestLines.length; line++) {
-                            bestLines[line].line.setMap(null);
-                        }
-                        bestLines.length = 0;
-                        bestSpine = event.points.slice();
-                        for (i=0; i<event.points.length; i++) {
-                            var linePath = [portals[event.anchors[0]],portals[event.points[i]]];
-                            var line = new google.maps.Polyline({
-                                path: linePath,
-                                strokeColor: '#0000FF',
-                                map: map
+                else if (valueSelected != "Select") {
+                    var selectedPlaybox; // cheezy lambda capture so the callback in the loop uses the right playbox
+                    for (playbox of playBoxes) {
+                        if (playbox.name == valueSelected) {
+                            selectedPlaybox = playbox;
+                            let mapOptions = { center: new google.maps.LatLng(playbox.map.center.lat, playbox.map.center.lng),
+                               zoom: playbox.map.zoom,
+                               mapTypeId: google.maps.MapTypeId.ROADMAP };  
+                            map.setOptions(mapOptions);
+                            $.getJSON(playbox.portals, function (data) {    
+                                addPortalMarkers(data);
+                                for (solution of selectedPlaybox.solutions) {
+                                    addSolution({anchors: [solution[0], solution[1]], points: solution[2]});
+                                }
+                                displayResults();
                             });
-                            bestLines.push({path: linePath, line: line});
-                            linePath = [portals[event.anchors[1]],portals[event.points[i]]];
-                            line = new google.maps.Polyline({
-                                path: linePath,
-                                strokeColor: '#0000FF',
-                                map: map
-                            }); 
-                            bestLines.push({path: linePath, line: line});
-                        }
-                        if (!('line' in bestAnchors) || bestAnchorPortals[0] != event.anchors[0] || bestAnchorPortals[1] != event.anchors[1]) 
-                        {        
-                            if ('line' in bestAnchors) {
-                                bestAnchors.line.setMap(null);
-                            }
-                            var linePath = [portals[event.anchors[0]], portals[event.anchors[1]]];
-                            var line = new google.maps.Polyline({
-                                path: linePath,
-                                map: map
-                            });        
-                            bestAnchors = {path:linePath, line:line};
-                        }                    
-                        bestAnchorPortals = event.anchors;    
-                    }
-                    else if (event.type == "anchor") {
-                        if (event.index in markers) {
-                            markers[event.index].setMap(null);
-                        }
-                        markers[event.index] = makeMarker(event.lat, event.lng, "circle.png", "");
-                    }
-                    else if (event.type == "done") {
-                        for (let marker of markers) {
-                            marker.setMap(null);
-                            $("#mapCanvas").height("90%");
 
-                            $("#results").height("10%");
-                            let results = "<p>Anchors: <ul><li>" 
-                                + portals[bestAnchorPortals[0]].name 
-                                + "</li><li>" 
-                                + portals[bestAnchorPortals[1]].name
-                                + "</ul><ol>";
-                            for (let spine of bestSpine) {
-                                results += "<li>" + portals[spine].name + "</li>";
-                            }
-                            results += "</ol>";
-                            $("#results").html(results);
                         }
                     }
-                };
+                    
+                }
+             });
+
+            $("#debugNext").click(function(){
+                if (debugIndex < debugEvents.length-1) {
+                    debugIndex++;
+                    drawDebug();
+                }
             });            
+            $("#debugPrev").click(function(){
+                if (debugIndex > 0) {
+                    debugIndex--;
+                    drawDebug();
+                }
+            });
+            $("#debugBest").click(function(){
+                debugBestShown = !debugBestShown;
+
+                showSolutions(debugBestShown);
+
+                let debugMap = debugBestShown? map : null;
+                markers[0].setMap(debugMap);
+                markers[1].setMap(debugMap);                  
+            });
         }
     }
 </script>
